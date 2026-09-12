@@ -1,14 +1,20 @@
-
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
+import sys
+
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from matplotlib import rc
+plt.rcParams.update({'font.size':22})
 
 from tabulate import tabulate
 from prettytable import PrettyTable, TableStyle
 from IPython.display import display, HTML
+from datetime import date, datetime, timedelta
 
 from nhlpy.nhl_client import NHLClient
 
@@ -61,6 +67,30 @@ def toi_string_to_float(df, str_param_name, float_param_name):
     return df
 
 
+def get_dates_and_weekdays(start_str, end_str, date_format="%Y-%m-%d"):
+    # Convert string inputs to datetime objects
+    start_date = datetime.strptime(start_str, date_format)
+    end_date = datetime.strptime(end_str, date_format)
+
+    date_strings = []
+    days_of_week = []
+
+    current_date = start_date
+    # Loop inclusively from start_date to end_date
+    while current_date <= end_date:
+        # Append date formatted as a string
+        date_strings.append(current_date.strftime(date_format))
+
+        # Append the full name of the day of the week (e.g., 'Monday')
+        # Use "%a" if you want short names instead (e.g., 'Mon')
+        days_of_week.append(current_date.strftime("%A"))
+
+        # Move to the next day
+        current_date += timedelta(days=1)
+
+    return date_strings, days_of_week
+
+
 def format_table_stats(stat_arr, stat_name):
 
     idx_max = np.argmax(stat_arr)+1
@@ -96,6 +126,33 @@ def format_table_stats(stat_arr, stat_name):
             row_data[i] = str(val)
 
     return row_data
+
+
+
+def format_schedule_stats(stat_arr, stat_name):
+
+    stat_arr_obj = stat_arr.astype(object)
+    stat_arr_obj = np.array([f"{x:g}" for x in stat_arr_obj], dtype=object)
+    stat_arr_obj = np.insert(stat_arr_obj, 0, stat_name)
+
+    row_data = [""] * len(stat_arr_obj)
+    for i, val in enumerate(stat_arr_obj):
+        row_data[i] = str(val)
+
+        '''
+        # consider something like this if I want to bold rows
+        if i == 0:
+            continue
+        elif i == 1:
+            if val > 3:
+                row_data[i] = f"\033[1;92m{val}\033[0m"
+            elif val < 3:
+                row_data[i] = f"\033[1;31m{val}\033[0m"
+            else:
+                row_data[i] = str(val)
+        '''
+    return row_data
+
 
 
 def load_summary_statistics_for_skaters(season_start, season_end, limit: int = 100):
@@ -912,3 +969,206 @@ def home_away_split(player_id, season_id):
     table.add_row(['Total Shooting %', df_player_game_stats_shooting_percentage, df_player_game_stats_home_shooting_percentage, df_player_game_stats_road_shooting_percentage])
     #table.set_style(DOUBLE_BORDER)
     print(table)
+
+
+
+def game_schedule(start_date, end_date):
+
+    client = NHLClient()
+
+    dates, weekdays = get_dates_and_weekdays(start_date, end_date)
+
+    #print("Dates:", dates)
+    #print("Days of Week:", weekdays)
+
+    df_schedule = pd.DataFrame({
+        "date": dates,
+        "day_of_week": weekdays,
+    })
+    df_schedule = df_schedule.set_index('date')
+
+
+    # get the number of games each day
+    num_games = np.zeros(len(df_schedule))
+    game_ids = []
+    all_home_teams = []
+    all_away_teams = []
+    for i in range(len(df_schedule)):
+
+        # define game info to get
+        ids = []
+        home_teams = []
+        away_teams = []
+
+        # Get games for a specific date
+        games = client.schedule.daily_schedule(date=df_schedule.index[i])
+        df_games = pd.DataFrame(games['games'])
+
+        # check if df_games is empty
+        if df_games.empty:
+            print("No Games on %s" % (df_schedule.index[i]))
+        else:
+            # makes sure games are regular season games
+            df_games = df_games[df_games["gameType"] == 2]
+            num_games[i] = len(df_games)
+
+            # grab the game ids, home team, and away team
+            for j in range(len(df_games)):
+                ids.append(df_games["id"].values[j])
+                home_teams.append(df_games["homeTeam"].values[j]["abbrev"])
+                away_teams.append(df_games["awayTeam"].values[j]["abbrev"])
+
+        game_ids.append(ids)
+        all_home_teams.append(home_teams)
+        all_away_teams.append(away_teams)
+
+
+    # add columns that I want to track
+    df_schedule["num_games"] = num_games
+    df_schedule["num_games"] = df_schedule["num_games"].astype(int)
+
+    df_schedule["game_ids"] = game_ids
+    df_schedule["home_teams"] = all_home_teams
+    df_schedule["away_teams"] = all_away_teams
+
+
+    df_schedule = df_schedule[df_schedule["num_games"] != 0]
+
+    ### identify the "busy days"
+    df_schedule["num_games_tracker"] = ""
+    for i in range(len(df_schedule)):
+        if df_schedule["num_games"].values[i] == 0:
+            df_schedule["num_games_tracker"].values[i] = "No Games"
+        elif df_schedule["num_games"].values[i] <= 6:
+            df_schedule["num_games_tracker"].values[i] = "Light Day"
+        elif 6 < df_schedule["num_games"].values[i] <= 9:
+            df_schedule["num_games_tracker"].values[i] = "Medium Day"
+            #print("%s is a moderately busy fantasy day: %s games" % (df_schedule.index[i], df_schedule["num_games"].values[i]))
+            ## make above text yellow!
+        elif df_schedule["num_games"].values[i] > 9:
+            df_schedule["num_games_tracker"].values[i] = "Busy Day"
+            #print("%s is a very busy fantasy day: %s games" % (df_schedule.index[i], df_schedule["num_games"].values[i]))
+            ## make above text red!
+
+    ## eventually automate this and query the current team list
+    full_team_abbr_list = [
+        "ANA",
+        "BOS",
+        "BUF",
+        "CAR",
+        "CBJ",
+        "CGY",
+        "CHI",
+        "COL",
+        "DAL",
+        "DET",
+        "EDM",
+        "FLA",
+        "LAK",
+        "MIN",
+        "MTL",
+        "NJD",
+        "NSH",
+        "NYI",
+        "NYR",
+        "OTT",
+        "PHI",
+        "PIT",
+        "SEA",
+        "SJS",
+        "STL",
+        "TBL",
+        "TOR",
+        "UTA",
+        "VGK",
+        "WSH",
+        "VAN",
+        "WPG",
+    ]
+
+
+    team_name_dict = {
+        "ANA": "Anaheim Ducks",
+        "BOS": "Boston Bruins",
+        "BUF": "Buffalo Sabres",
+        "CAR": "Carolina Hurricanes",
+        "CBJ": "Columbus Blue Jackets",
+        "CGY": "Calgary Flames",
+        "CHI": "Chicago Blackhawks",
+        "COL": "Colorado Avalanche",
+        "DAL": "Dallas Stars",
+        "DET": "Detroit Red Wings",
+        "EDM": "Edmonton Oilers",
+        "FLA": "Florida Panthers",
+        "LAK": "Los Angeles Kings",
+        "MIN": "Minnesota Wild",
+        "MTL": "Montréal Canadiens",
+        "NJD": "New Jersey Devils",
+        "NSH": "Nashville Predators",
+        "NYI": "New York Islanders",
+        "NYR": "New York Rangers",
+        "OTT": "Ottawa Senators",
+        "PHI": "Philadelphia Flyers",
+        "PIT": "Pittsburgh Penguins",
+        "SEA": "Seattle Kraken",
+        "SJS": "San Jose Sharks",
+        "STL": "St. Louis Blues",
+        "TBL": "Tampa Bay Lightning",
+        "TOR": "Toronto Maple Leafs",
+        "UTA": "Utah Mammoth",
+        "VGK": "Vegas Golden Knights",
+        "WSH": "Washington Capitals",
+        "VAN": "Vancouver Canucks",
+        "WPG": "Winnipeg Jets",
+    }
+
+
+    cols_for_table = ["Game Category", "Total # of Games", "# of Light Days", "# of Medium Days", "# of Heavy Days"]
+
+    schedule_headers = [
+    f"\033[1m{cols_for_table[i]}\033[0m" for i in range(len(cols_for_table))
+    ]
+    schedule_table = PrettyTable(schedule_headers)
+    schedule_table.title = "\033[1mGame Breakdown in Date Window %s - %s\033[0m" % (start_date, end_date)
+
+    # loop through all of the teams
+    for i in range(len(full_team_abbr_list)):
+
+        team_full_schedule = client.schedule.team_season_schedule(team_abbr=full_team_abbr_list[i], season="20262027")
+        df_team_full_schedule = pd.DataFrame(team_full_schedule["games"])
+        df_team_full_schedule = df_team_full_schedule.set_index('gameDate')
+
+        df_team_schedule_in_range = pd.merge(df_schedule, df_team_full_schedule, left_index=True, right_index=True, how='inner')
+
+        # count the total number of games, and how many of them are busy days
+        total_games = len(df_team_schedule_in_range)
+        light_days_counter = 0
+        medium_days_counter = 0
+        busy_days_counter = 0
+        for j in range(len(df_team_schedule_in_range)):
+            if df_team_schedule_in_range["num_games_tracker"].values[j] == "Light Day":
+                light_days_counter+=1
+            elif df_team_schedule_in_range["num_games_tracker"].values[j] == "Medium Day":
+                medium_days_counter+=1
+            elif df_team_schedule_in_range["num_games_tracker"].values[j] == "Busy Day":
+                busy_days_counter+=1
+
+        team_games = np.array([total_games, light_days_counter, medium_days_counter, busy_days_counter])
+
+        team_row = format_schedule_stats(team_games, team_name_dict[full_team_abbr_list[i]])
+        schedule_table.add_row(team_row)
+        schedule_table.add_divider()
+
+    print(schedule_table)
+
+
+
+
+
+
+
+
+
+
+
+## end

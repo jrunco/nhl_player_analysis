@@ -10,17 +10,15 @@ To use this tool do the following:
 
   `conda env create -f environment.yml`
 
-3. run analyze_single_skater.ipynb in a jupyter notebook. To run this do the following:
+3. Open a jupyter notebook to run any of the available tools. Type `jupyter notebook` in a terminal window (same directory where the .ipynb files are). This will open a jupyter notebook session in a web browser. There are three available tools at this time.
 
-    a) type `jupyter notebook` in a terminal window (same directory where main.ipynb is). This will open a jupyter notebook session in a web browser
+    a) analyze_single_skater.ipynb -- This tool provides an in-depth analysis on a single skater (no goalies). Specifically, it provides a breakdown on their stats over the course of a single season. Stats on a per game and per 60 minutes are calculated. Home vs. away splits are also calculated. It also plots the player's statistical totals each year over the course of their career and calculates their career averages per season. To run change the default fantasy scoring system to your league system in cell 3, and in cell 4) define the skater name and regular season to what you want to analyze.
 
-    b) in the web browser jupyter notebook session click on main.ipynb
+    b) compare_multiple_skaters.ipynb -- This tool provides a stats comparison for 2 or more skaters.
 
-    c) in cell 3) change the default fantasy scoring system to your league system
+    c) create_schedule_calendar.py -- This tool shows the number of busy and light number of games for all 32 teams over a user specified time range
 
-    d) in cell 4) change the default skater and regular season to what you want to analyze
-
-    e) click "kernel" then "restart and run all" to run the kernel.
+To run any of these scripts, click "kernel" then "restart and run all" to run the kernel.
 
 
 Note: do not change the folder structure and what files are stored where. This is needed to accurately grab pngs of NHL logos to plot.
