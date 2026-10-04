@@ -8,6 +8,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+import matplotlib.colors as mcolors
 from matplotlib import rc
 plt.rcParams.update({'font.size':22})
 
@@ -15,6 +16,8 @@ from tabulate import tabulate
 from prettytable import PrettyTable, TableStyle
 from IPython.display import display, HTML
 from datetime import date, datetime, timedelta
+
+from sklearn.cluster import KMeans
 
 from nhlpy.nhl_client import NHLClient
 
@@ -1162,6 +1165,122 @@ def game_schedule(start_date, end_date):
     print(schedule_table)
 
 
+def skater_single_season_tiers(season,
+    fp_goals,
+    fp_assists,
+    fp_plusminus,
+    fp_pp_goals,
+    fp_pp_assists,
+    fp_sh_goals,
+    fp_sh_assists,
+    fp_game_winning_goals,
+    fp_shots,
+    fp_hits,
+    fp_blocks,
+    fp_fowins,
+    fp_folosses,
+    fp_pims,
+    stat,
+    positions,
+    ):
+
+    skater_summary_query = load_summary_statistics_for_skaters(season, season)
+    df_skater_summary_query = pd.DataFrame(skater_summary_query)
+    df_skater_summary_query = df_skater_summary_query.sort_values(by='playerId')
+
+    skater_realtime_query = load_realtime_statistics_for_skaters(season, season)
+    df_skater_realtime_query = pd.DataFrame(skater_realtime_query)
+    df_skater_realtime_query = df_skater_realtime_query.sort_values(by='playerId')
+
+    skater_faceoffwins_query = load_faceoffwins_statistics_for_skaters(season, season)
+    df_skater_faceoffwins_query = pd.DataFrame(skater_faceoffwins_query)
+    df_skater_faceoffwins_query = df_skater_faceoffwins_query.sort_values(by='playerId')
+
+    # merge the dataframes
+    df_merge1 = pd.merge(df_skater_summary_query, df_skater_realtime_query, on='playerId', suffixes=('', '_drop'))
+    df_merge1 = df_merge1.drop(columns=[col for col in df_merge1.columns if col.endswith('_drop')])
+
+    # more merges if needed
+
+    # final merge
+    df_skater_stats = pd.merge(df_merge1, df_skater_faceoffwins_query, on='playerId', suffixes=('', '_drop'))
+    df_skater_stats = df_skater_stats.drop(columns=[col for col in df_skater_stats.columns if col.endswith('_drop')])
+
+    # grab only the positions wanted
+    df_skater_stats = df_skater_stats[df_skater_stats["positionCode"].isin(positions)]
+
+    # calculate total fantasy points
+    tot_fantasy_points = (df_skater_stats["goals"]*fp_goals
+        + df_skater_stats["assists"]*fp_assists
+        + df_skater_stats["plusMinus"]*fp_plusminus
+        + df_skater_stats["ppGoals"]*fp_pp_goals
+        + (df_skater_stats["ppPoints"]-df_skater_stats["ppGoals"])*fp_pp_assists
+        + df_skater_stats["shGoals"]*fp_sh_goals
+        + (df_skater_stats["shPoints"]-df_skater_stats["shGoals"])*fp_sh_assists
+        + df_skater_stats["gameWinningGoals"]*fp_game_winning_goals
+        + df_skater_stats["shots"]*fp_shots
+        + df_skater_stats["hits"]*fp_hits
+        + df_skater_stats["blockedShots"]*fp_blocks
+        + df_skater_stats["totalFaceoffWins"]*fp_fowins
+        + df_skater_stats["totalFaceoffLosses"]*fp_folosses
+        + df_skater_stats["penaltyMinutes"]*fp_pims
+    )
+
+    df_skater_stats["fantasy_points"] = tot_fantasy_points
+    df_skater_stats["fantasy_points_per_game"] = df_skater_stats["fantasy_points"]/df_skater_stats["gamesPlayed"]
+
+    # remove players that barely got any fantasy points
+    df_skater_stats = df_skater_stats[df_skater_stats["fantasy_points"] >= 100.0]
+
+    X_data = df_skater_stats[[stat]]
+    kmeans = KMeans(n_clusters=10, random_state=71)
+    df_skater_stats['cluster_seed'] = kmeans.fit_predict(X_data)
+
+    # Sort cluster centers and get the index mapping
+    # We use .mean(axis=1) to get a sorting scalar if data is multi-dimensional
+    idx = np.argsort(kmeans.cluster_centers_.sum(axis=1))
+
+    # Create a lookup array to remap the old labels to the sorted order
+    lut = np.zeros_like(idx)
+    lut[idx] = np.arange(len(idx))
+
+    # Apply the mapping to the original labels
+    ordered_labels = lut[kmeans.labels_]
+
+    df_skater_stats['cluster_num'] = 10 - ordered_labels
+
+    df_skater_stats_fp_sort = df_skater_stats.sort_values(by='fantasy_points_per_game', ascending=False)
+
+    #cmap_colors = ['maroon', 'tab:red', 'orange', 'blueviolet', 'magenta', 'black', 'grey', 'cyan', 'blue', 'tab:green']
+    cmap_colors = ['tab:green', 'blue', 'cyan', 'grey', 'black', 'magenta', 'blueviolet', 'orange', 'tab:red', 'maroon']
+    cmap = mcolors.ListedColormap(cmap_colors)
+
+
+    scatter = plt.scatter(df_skater_stats_fp_sort['skaterFullName'], df_skater_stats_fp_sort[stat], c=df_skater_stats_fp_sort['cluster_num'], cmap=cmap)
+    #plt.xticks(rotation=45, ha='right')
+    plt.xticks([])
+    plt.title(stat)
+
+    handles, labels = scatter.legend_elements(prop="colors")
+    custom_labels = np.unique(df_skater_stats_fp_sort['cluster_num'].values)
+    plt.legend(handles, custom_labels, title="Tiers", frameon=False, bbox_to_anchor=(1.05, 1.2), loc='upper left')
+
+    plt.show()
+
+    # print tables of player names
+    for i in range(len(np.unique(df_skater_stats_fp_sort['cluster_num'].values))):
+
+        tier_table_headers = ["Player Name", stat]
+        tier_table = PrettyTable(tier_table_headers)
+        tier_table.title = "\033[1m Tier %s \033[0m" % (np.unique(df_skater_stats_fp_sort['cluster_num'].values)[i])
+
+        df_skater_tier = df_skater_stats_fp_sort[df_skater_stats_fp_sort["cluster_num"] == np.unique(df_skater_stats_fp_sort['cluster_num'].values)[i]]
+        for j in range(len(df_skater_tier)):
+            tier_table.add_row([df_skater_tier["skaterFullName"].values[j], np.round(df_skater_tier[stat].values[j], 2)])
+
+        print(tier_table)
+
+    return df_skater_stats_fp_sort
 
 
 
